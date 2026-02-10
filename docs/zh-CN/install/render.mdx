@@ -43,11 +43,10 @@ services:
   - type: web
     name: openclaw
     runtime: docker
-    plan: starter
+    plan: standard
     healthCheckPath: /health
+    dockerCommand: node openclaw.mjs gateway --allow-unconfigured --bind lan --port $PORT
     envVars:
-      - key: PORT
-        value: "8080"
       - key: SETUP_PASSWORD
         sync: false # prompts during deploy
       - key: OPENCLAW_STATE_DIR
@@ -67,20 +66,22 @@ services:
 | 功能                  | 用途                                     |
 | --------------------- | ---------------------------------------- |
 | `runtime: docker`     | 从仓库的 Dockerfile 进行构建             |
+| `dockerCommand`       | 覆盖 Dockerfile CMD，公开绑定并监听 `$PORT` |
 | `healthCheckPath`     | Render 监控 `/health` 并重启不健康的实例 |
 | `sync: false`         | 在部署时提示输入值（用于密钥）           |
-| `generateValue: true` | 自动生成加密安全的值                     |
+| `generateValue: true` | 自动生成安全令牌（公开绑定时必需）       |
 | `disk`                | 持久化存储，在重新部署后数据仍然保留     |
 
 ## 选择套餐
 
-| 套餐      | 休眠机制           | 磁盘   | 适用场景         |
-| --------- | ------------------ | ------ | ---------------- |
-| Free      | 空闲 15 分钟后休眠 | 不可用 | 测试、演示       |
-| Starter   | 永不休眠           | 1GB+   | 个人使用、小团队 |
-| Standard+ | 永不休眠           | 1GB+   | 生产环境、多渠道 |
+| 套餐     | 内存   | 价格     | 磁盘   | 适用场景                      |
+| -------- | ------ | -------- | ------ | ----------------------------- |
+| Free     | 512 MB | $0/月    | 不可用 | 仅供测试（可能内存不足）      |
+| Starter  | 512 MB | $7/月    | 1GB+   | 不推荐（可能内存不足）        |
+| Standard | 2 GB   | $25/月   | 1GB+   | 推荐最低配置                  |
+| Pro      | 4 GB   | $85/月   | 1GB+   | 多渠道、高负载使用            |
 
-Blueprint 默认使用 `starter`。如需使用免费套餐，请在你 fork 的 `render.yaml` 中将 `plan: free`（但请注意：没有持久化磁盘意味着每次部署后配置都会重置）。
+Blueprint 默认使用 `standard`（2 GB 内存）。网关启动时大约需要 550 MB 内存，因此 512 MB 及以下的套餐将因内存不足而失败。
 
 ## 部署完成后
 
@@ -151,11 +152,11 @@ https://<your-service>.onrender.com/setup/export
 在 Render 仪表盘中检查部署日志。常见问题：
 
 - 缺少 `SETUP_PASSWORD` — Blueprint 会提示输入此值，但请确认已设置
-- 端口不匹配 — 确保 `PORT=8080` 与 Dockerfile 暴露的端口一致
+- Starter/Free 套餐内存不足 — 请升级到 Standard（最低 2 GB 内存）
 
 ### 冷启动缓慢（免费套餐）
 
-免费套餐的服务在 15 分钟无活动后会休眠。休眠后的首次请求需要几秒钟等待容器启动。升级到 Starter 套餐可实现始终在线。
+免费套餐的服务在 15 分钟无活动后会休眠。休眠后的首次请求需要几秒钟等待容器启动。升级到 Standard 套餐可实现始终在线。
 
 ### 重新部署后数据丢失
 
