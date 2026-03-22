@@ -35,10 +35,19 @@ export type DiagnosticUsageEvent = DiagnosticBaseEvent & {
   };
   costUsd?: number;
   durationMs?: number;
-  /** User-facing input text. Only populated when diagnostics.otel.includeContent is enabled. */
+};
+
+export type DiagnosticModelContentEvent = DiagnosticBaseEvent & {
+  type: "model.content";
+  sessionKey?: string;
+  sessionId?: string;
+  channel?: string;
+  provider?: string;
+  model?: string;
   inputText?: string;
-  /** User-facing output text. Only populated when diagnostics.otel.includeContent is enabled. */
   outputText?: string;
+  source?: "embedded" | "cli" | "background";
+  durationMs?: number;
 };
 
 export type DiagnosticWebhookReceivedEvent = DiagnosticBaseEvent & {
@@ -153,6 +162,7 @@ export type DiagnosticToolLoopEvent = DiagnosticBaseEvent & {
 
 export type DiagnosticEventPayload =
   | DiagnosticUsageEvent
+  | DiagnosticModelContentEvent
   | DiagnosticWebhookReceivedEvent
   | DiagnosticWebhookProcessedEvent
   | DiagnosticWebhookErrorEvent

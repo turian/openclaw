@@ -538,7 +538,7 @@ export async function runReplyAgent(params: {
         config: cfg,
       });
       const costUsd = estimateUsageCost({ usage, cost: costConfig });
-      const usageEvent: Parameters<typeof emitDiagnosticEvent>[0] & { type: "model.usage" } = {
+      emitDiagnosticEvent({
         type: "model.usage",
         sessionKey,
         sessionId: followupRun.run.sessionId,
@@ -560,38 +560,9 @@ export async function runReplyAgent(params: {
         },
         costUsd,
         durationMs: Date.now() - runStartedAt,
-      };
-      // Include model-originated content when explicitly opted in via config.
-      // Prefer replyPayloads (sanitized by buildReplyPayloads: control tokens,
-      // heartbeat markers, messaging-tool duplicates, and reply directives are
-      // stripped). Fall back to payloadArray (raw, pre-sanitization) when
-      // replyPayloads is empty — this happens for streamed runs (block pipeline
-      // already delivered text) and messaging-tool-suppressed replies (text was
-      // sent via the tool path, not the final reply). The fallback captures
-      // model-originated content for observability even when the reply layer
-      // suppresses final delivery.
-      // Excludes isError and isReasoning payloads in both paths.
-      // Note: followupRun.prompt is the queue body, which may diverge from the
-      // effective prompt the model actually sees (attempt.ts adds bootstrap
-      // warnings, hook context, thread-history notes, etc.). Capturing the true
-      // effectivePrompt requires instrumentation at the model call boundary
-      // (attempt.ts), which is not yet implemented.
-      if (cfg.diagnostics?.otel?.includeContent) {
-        if (typeof followupRun.prompt === "string") {
-          usageEvent.inputText = followupRun.prompt;
-        }
-        const contentSource = replyPayloads.length > 0 ? replyPayloads : payloadArray;
-        const outputTexts = contentSource
-          .filter(
-            (p): p is typeof p & { text: string } =>
-              typeof p.text === "string" && !p.isError && p.isReasoning !== true,
-          )
-          .map((p) => p.text);
-        if (outputTexts.length > 0) {
-          usageEvent.outputText = outputTexts.join("\n");
-        }
-      }
-      emitDiagnosticEvent(usageEvent);
+      });
+      // Content capture (prompts/completions) is handled separately in attempt.ts
+      // via model.content events, not here. This keeps model.usage lightweight.
     }
 
     if (replyPayloads.length === 0) {

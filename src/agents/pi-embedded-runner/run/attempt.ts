@@ -14,6 +14,7 @@ import {
 import { resolveHeartbeatPrompt } from "../../../auto-reply/heartbeat.js";
 import { resolveChannelCapabilities } from "../../../config/channel-capabilities.js";
 import type { OpenClawConfig } from "../../../config/config.js";
+import { emitDiagnosticEvent, isDiagnosticsEnabled } from "../../../infra/diagnostic-events.js";
 import { getMachineDisplayName } from "../../../infra/machine-name.js";
 import {
   ensureGlobalUndiciEnvProxyDispatcher,
@@ -2870,6 +2871,34 @@ export async function runEmbeddedAttempt(
           log.debug(
             `embedded run prompt end: runId=${params.runId} sessionId=${params.sessionId} durationMs=${Date.now() - promptStartedAt}`,
           );
+        }
+
+        // Emit model.content diagnostic event for OTEL content telemetry.
+        // Gated: diagnostics enabled, includeContent opt-in, and successful prompt completion only.
+        // assistantTexts may be empty in tool-only turns (model produced tool calls but no
+        // visible text); outputText is omitted in that case rather than set to "".
+        // assistantTexts may exclude text already sent via messaging tools (deduplicated by
+        // the subscription layer) — this is intentional to avoid double-counting.
+        if (
+          isDiagnosticsEnabled(params.config) &&
+          params.config?.diagnostics?.otel?.includeContent &&
+          !promptError &&
+          !aborted &&
+          !yieldAborted
+        ) {
+          const outputText = assistantTexts.length > 0 ? assistantTexts.join("\n") : undefined;
+          emitDiagnosticEvent({
+            type: "model.content",
+            sessionKey: params.sessionKey,
+            sessionId: params.sessionId,
+            channel: params.messageProvider ?? undefined,
+            provider: params.provider,
+            model: params.modelId,
+            inputText: effectivePrompt,
+            outputText,
+            source: "embedded",
+            durationMs: Date.now() - promptStartedAt,
+          });
         }
 
         // Capture snapshot before compaction wait so we have complete messages if timeout occurs

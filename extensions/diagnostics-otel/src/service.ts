@@ -469,13 +469,37 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         if (evt.costUsd) {
           spanAttrs["gen_ai.usage.cost"] = evt.costUsd;
         }
+
+        const span = spanWithDuration("openclaw.model.usage", spanAttrs, evt.durationMs);
+        span.end();
+      };
+
+      const recordModelContent = (
+        evt: Extract<DiagnosticEventPayload, { type: "model.content" }>,
+      ) => {
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number> = {
+          "gen_ai.request.model": evt.model ?? "unknown",
+          "gen_ai.system": evt.provider ?? "unknown",
+          // Current GenAI registry attributes (gen_ai.system is deprecated)
+          "gen_ai.provider.name": evt.provider ?? "unknown",
+          "gen_ai.operation.name": "chat",
+          "openclaw.channel": evt.channel ?? "unknown",
+          "openclaw.sessionKey": evt.sessionKey ?? "",
+          "openclaw.sessionId": evt.sessionId ?? "",
+          "openclaw.source": evt.source ?? "unknown",
+        };
+        if (evt.sessionKey) {
+          spanAttrs["langfuse.session.id"] = evt.sessionKey;
+        }
         // Content capture: standard gen_ai.* attrs (primary), Langfuse compat (secondary).
         // All content is redacted then truncated to MAX_CONTENT_ATTR_BYTES before export
         // to avoid silent drops or rejections by OTEL backends with attribute size limits.
-        // Guard on otel.includeContent here as a defense-in-depth check — the event
-        // emitter in agent-runner.ts gates content at the source, but the diagnostic
-        // event bus is shared across all plugin listeners, so we also enforce the
-        // opt-in at the exporter to prevent accidental content export.
+        // Guard on otel.includeContent as defense-in-depth — the event emitter in
+        // attempt.ts gates content at the source, but the diagnostic event bus is
+        // shared across all plugin listeners, so we also enforce the opt-in here.
         if (otel?.includeContent && evt.inputText) {
           const redactedInput = truncateToBytes(
             redactSensitiveText(evt.inputText),
@@ -492,8 +516,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           spanAttrs["gen_ai.completion"] = redactedOutput;
           spanAttrs["langfuse.observation.output"] = redactedOutput;
         }
-
-        const span = spanWithDuration("openclaw.model.usage", spanAttrs, evt.durationMs);
+        const span = spanWithDuration("openclaw.model.content", spanAttrs, evt.durationMs);
         span.end();
       };
 
@@ -675,6 +698,9 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           switch (evt.type) {
             case "model.usage":
               recordModelUsage(evt);
+              return;
+            case "model.content":
+              recordModelContent(evt);
               return;
             case "webhook.received":
               recordWebhookReceived(evt);
