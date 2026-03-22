@@ -4,6 +4,7 @@ import { getAcpSessionManager } from "../acp/control-plane/manager.js";
 import { resolveAcpAgentPolicyError, resolveAcpDispatchPolicyError } from "../acp/policy.js";
 import { toAcpRuntimeError } from "../acp/runtime/errors.js";
 import { resolveAcpSessionCwd } from "../acp/runtime/session-identifiers.js";
+import { logMessageProcessed } from "../logging/diagnostic.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 
 const log = createSubsystemLogger("agents/agent-command");
@@ -43,6 +44,7 @@ import {
   emitAgentEvent,
   registerAgentRunContext,
 } from "../infra/agent-events.js";
+import { emitDiagnosticEvent, isDiagnosticsEnabled } from "../infra/diagnostic-events.js";
 import { buildOutboundSessionContext } from "../infra/outbound/session-context.js";
 import { getRemoteSkillEligibility } from "../infra/skills-remote.js";
 import { normalizeAgentId } from "../routing/session-key.js";
@@ -53,6 +55,7 @@ import { resolveSendPolicy } from "../sessions/send-policy.js";
 import { emitSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { sanitizeForLog } from "../terminal/ansi.js";
 import { resolveMessageChannel } from "../utils/message-channel.js";
+import { estimateUsageCost, resolveModelCostConfig } from "../utils/usage-format.js";
 import {
   listAgentIds,
   resolveAgentDir,
@@ -71,7 +74,8 @@ import { resolveAgentRunContext } from "./command/run-context.js";
 import { updateSessionStoreAfterAgentRun } from "./command/session-store.js";
 import { resolveSession } from "./command/session.js";
 import type { AgentCommandIngressOpts, AgentCommandOpts } from "./command/types.js";
-import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
+import { resolveContextTokensForModel } from "./context.js";
+import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "./defaults.js";
 import { FailoverError } from "./failover-error.js";
 import { formatAgentInternalEventsForPrompt } from "./internal-events.js";
 import { AGENT_LANE_SUBAGENT } from "./lanes.js";
@@ -94,6 +98,7 @@ import { buildWorkspaceSkillSnapshot } from "./skills.js";
 import { getSkillsSnapshotVersion } from "./skills/refresh.js";
 import { normalizeSpawnedRunMetadata } from "./spawned-context.js";
 import { resolveAgentTimeoutMs } from "./timeout.js";
+import { hasNonzeroUsage } from "./usage.js";
 import { ensureAgentWorkspace } from "./workspace.js";
 
 type PersistSessionEntryParams = {
@@ -1239,6 +1244,61 @@ async function agentCommandInternal(
           },
         });
       }
+
+      // Emit model.usage for non-ACP agent runs (subagents, CLI, API).
+      // Top-level webhook messages emit from runReplyAgent (separate path).
+      if (isDiagnosticsEnabled(cfg) && result.meta.agentMeta?.usage) {
+        const usage = result.meta.agentMeta.usage;
+        if (hasNonzeroUsage(usage)) {
+          const providerUsed = result.meta.agentMeta.provider ?? fallbackProvider;
+          const modelUsed = result.meta.agentMeta.model ?? fallbackModel;
+          const input = usage.input ?? 0;
+          const output = usage.output ?? 0;
+          const cacheRead = usage.cacheRead ?? 0;
+          const cacheWrite = usage.cacheWrite ?? 0;
+          const promptTokens = input + cacheRead + cacheWrite;
+          const totalTokens = usage.total ?? promptTokens + output;
+          const contextLimit =
+            resolveContextTokensForModel({
+              cfg,
+              provider: providerUsed,
+              model: modelUsed,
+              contextTokensOverride: agentCfg?.contextTokens,
+              fallbackContextTokens: DEFAULT_CONTEXT_TOKENS,
+            }) ?? DEFAULT_CONTEXT_TOKENS;
+          const costConfig = resolveModelCostConfig({
+            provider: providerUsed,
+            model: modelUsed,
+            config: cfg,
+          });
+          const costUsd = estimateUsageCost({ usage, cost: costConfig });
+          emitDiagnosticEvent({
+            type: "model.usage",
+            sessionKey,
+            sessionId,
+            channel: opts.channel ?? undefined,
+            provider: providerUsed,
+            model: modelUsed,
+            usage: { input, output, cacheRead, cacheWrite, promptTokens, total: totalTokens },
+            lastCallUsage: result.meta.agentMeta.lastCallUsage,
+            context: { limit: contextLimit, used: totalTokens },
+            costUsd,
+            durationMs: Date.now() - startedAt,
+          });
+        }
+      }
+
+      // Pragmatic reuse of message.processed for agent run outcome tracking.
+      // Uses "agent" as synthetic channel for internal runs (subagents, CLI, API).
+      if (isDiagnosticsEnabled(cfg)) {
+        logMessageProcessed({
+          channel: opts.channel ?? "agent",
+          sessionKey,
+          sessionId,
+          durationMs: Date.now() - startedAt,
+          outcome: "completed",
+        });
+      }
     } catch (err) {
       if (!lifecycleEnded) {
         emitAgentEvent({
@@ -1250,6 +1310,16 @@ async function agentCommandInternal(
             endedAt: Date.now(),
             error: String(err),
           },
+        });
+      }
+      if (isDiagnosticsEnabled(cfg)) {
+        logMessageProcessed({
+          channel: opts.channel ?? "agent",
+          sessionKey,
+          sessionId,
+          durationMs: Date.now() - startedAt,
+          outcome: "error",
+          error: String(err),
         });
       }
       throw err;
